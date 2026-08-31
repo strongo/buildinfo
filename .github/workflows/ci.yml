@@ -1,0 +1,40 @@
+name: Go CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'go.*'
+      - '**/*.go'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches:
+      - '**'
+    paths:
+      - 'go.*'
+      - '**/*.go'
+      - '.github/workflows/*.yml'
+
+jobs:
+
+  strongo_workflow:
+    permissions:
+      contents: write
+    # Pinned to an exact tag, never the moving @v1 - see
+    # strongo/cicd's own note on why a floating major tag is unsafe here.
+    uses: strongo/cicd/.github/workflows/workflow.yml@v1.14.14
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      # Pure Go, no cgo dependency.
+      cgo_enabled: false
+      # The owner tags releases manually for this module - disable the
+      # workflow's own auto version-bump/tag-on-push-to-main so CI never
+      # races a manual tag or creates one on its own.
+      disable-version-bumping: true
+      code_coverage: true
+      # Both packages are at 100% coverage as of the initial commit; set
+      # comfortably below that so an incidental drop doesn't fail CI while
+      # still catching an actual regression.
+      min_test_coverage_percent: 90
