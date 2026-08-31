@@ -29,10 +29,11 @@ jobs:
     with:
       # Pure Go, no cgo dependency.
       cgo_enabled: false
-      # The owner tags releases manually for this module - disable the
-      # workflow's own auto version-bump/tag-on-push-to-main so CI never
-      # races a manual tag or creates one on its own.
-      disable-version-bumping: true
+      # Auto-tag on push to main, same as the rest of the fleet: consumers
+      # pin this module by tag, so a merged fix must become a tag without a
+      # human step. (The initial v0.1.0 was tagged by hand only because this
+      # was disabled during first setup.)
+      disable-version-bumping: false
       code_coverage: true
       # Both packages are at 100% coverage as of the initial commit; set
       # comfortably below that so an incidental drop doesn't fail CI while
