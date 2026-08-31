@@ -12,10 +12,13 @@ ingitdb version     →  ingitdb 0.65.11 (none) @ unknown
 
 Two different mechanisms, two different (wrong) answers. This module fixes
 that by giving every CLI **one identical `-ldflags -X` snippet** that
-targets this module's package path, and (for the fleet's cobra +
-[fang](https://github.com/charmbracelet/fang) stack) one `Wire` call that
+targets this module's package path, plus one `Wire` call - `cobracmd.WireCobra`
+for plain [cobra](https://github.com/spf13/cobra), or `fangcmd.Wire` for the
+fleet's cobra + [fang](https://github.com/charmbracelet/fang) stack - that
 feeds both the `--version`/`-v` flag and the `version` subcommand from the
-exact same resolved value.
+exact same resolved value. Only `fangcmd` imports fang; `cobracmd` does not,
+so a binary that never touches fang doesn't link it in just because it
+wanted `--version` wired up.
 
 ## Install
 
@@ -81,23 +84,35 @@ GoReleaser config at `github.com/strongo/buildinfo.{version,commit,date}`
 and every binary reports through the identical, tested code path instead of
 each CLI reinventing its own.
 
-## Wiring: cobra + fang
+## Wiring
 
-The fleet standardises on [cobra](https://github.com/spf13/cobra) fronted by
-[fang](https://github.com/charmbracelet/fang). Left on its own, fang
-resolves `--version`/`-v` from `runtime/debug.ReadBuildInfo()` and prints
-`"unknown (built from source)"` whenever that lookup comes up empty - which
-is exactly the shipped bug above. The `cobracmd` subpackage closes that gap
-by feeding fang and a `version` subcommand from the same `Info`:
+Two sibling subpackages wire `Info` into a `--version`/`-v` flag and a
+`version` subcommand. Pick the one matching your binary's stack - both are
+driven from the same `cobracmd.VersionCommand` and the same
+`cobracmd.VersionTemplate`, so the two wiring paths cannot disagree with
+each other, and neither can disagree with itself between its flag and its
+subcommand.
+
+|                    | imports fang? | binary cost |
+|--------------------|:---:|---|
+| `cobracmd.WireCobra` | no  | plain cobra only |
+| `fangcmd.Wire`       | yes | cobra + fang's terminal-UI stack (measured ≈ +2 MB, see below) |
+
+**Use `cobracmd.WireCobra` unless your binary already depends on fang for
+something else.** Before this package existed, every consumer had to
+hand-roll this exact pattern (`root.Version = info.Short()` +
+`root.SetVersionTemplate(...)`) because the only shipped helper was
+fang-shaped; `WireCobra` is that hand-rolled pattern, written once and
+tested.
+
+### Plain cobra (no fang) - `cobracmd.WireCobra`
 
 ```go
 package main
 
 import (
-    "context"
     "os"
 
-    "charm.land/fang/v2"
     "github.com/spf13/cobra"
     "github.com/strongo/buildinfo"
     "github.com/strongo/buildinfo/cobracmd"
@@ -112,14 +127,62 @@ func main() {
     }
     // ... attach the rest of the command tree to root ...
 
-    fangOpts := cobracmd.Wire(root, info)
+    cobracmd.WireCobra(root, info)
+    if err := root.Execute(); err != nil {
+        os.Exit(1)
+    }
+}
+```
+
+`cobracmd.WireCobra`:
+
+1. Adds a `version` subcommand to `root` that prints `info.Long()`.
+2. Sets `root.Version` to `info.Short()` and overrides cobra's default
+   version template, so the `--version`/`-v` flag prints exactly
+   `info.Short()` - no `"<name> version "` prefix, no decoration.
+
+The `cobracmd` package imports only `cobra` and `buildinfo` - never fang -
+so a binary that imports `cobracmd` and nothing else does not link fang.
+
+### cobra + fang - `fangcmd.Wire`
+
+The fleet's cobra + [fang](https://github.com/charmbracelet/fang) stack
+uses the `fangcmd` subpackage instead. Left on its own, fang resolves
+`--version`/`-v` from `runtime/debug.ReadBuildInfo()` and prints
+`"unknown (built from source)"` whenever that lookup comes up empty - which
+is exactly the shipped bug above. `fangcmd.Wire` closes that gap by feeding
+fang and the same `cobracmd.VersionCommand` from the same `Info`:
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+
+    "charm.land/fang/v2"
+    "github.com/spf13/cobra"
+    "github.com/strongo/buildinfo"
+    "github.com/strongo/buildinfo/fangcmd"
+)
+
+func main() {
+    info := buildinfo.Get("mycli")
+
+    root := &cobra.Command{
+        Use:   "mycli",
+        Short: "mycli does things",
+    }
+    // ... attach the rest of the command tree to root ...
+
+    fangOpts := fangcmd.Wire(root, info)
     if err := fang.Execute(context.Background(), root, fangOpts...); err != nil {
         os.Exit(1)
     }
 }
 ```
 
-`cobracmd.Wire`:
+`fangcmd.Wire`:
 
 1. Adds a `version` subcommand to `root` that prints `info.Long()`.
 2. Overrides cobra's default version template so the `--version`/`-v` flag
@@ -130,20 +193,36 @@ func main() {
 
 Because both surfaces read from the one `Info` value passed into `Wire`,
 they cannot independently drift the way they did on the shipped binary
-above - this is covered by a test (`cobracmd.TestWire_FlagAndSubcommandReportSameVersion`)
+above - this is covered by a test (`fangcmd.TestWire_FlagAndSubcommandReportSameVersion`)
 that drives real `fang.Execute` calls for both `--version` and `version`
-and asserts they report the same version.
+and asserts they report the same version. `cobracmd` has the equivalent
+test (`cobracmd.TestWireCobra_FlagAndSubcommandReportSameVersion`) for the
+plain-cobra path.
 
-`cobracmd` is a separate package/import from the root `buildinfo` package,
-so anything that only needs `Info`/`Get`/`Short`/`Long` never pulls in
-cobra or fang.
+### Measured cost of importing fang
+
+A throwaway binary that imports only `cobracmd` (no fang, plain cobra
+`--version`/`version` wiring) versus one that imports `fangcmd` for the
+identical command tree, both built with the canonical ldflags snippet
+below and `go1.27.0 darwin/arm64`:
+
+| consumer | size | fang linked? (`go version -m`) |
+|---|---|---|
+| `buildinfo` only (no cobra) | 1.6 MB | no |
+| `cobracmd.WireCobra` (fang-free) | 4.0 MB | no |
+| `fangcmd.Wire` (fang) | 6.2 MB | yes - `charm.land/fang/v2 v2.0.1` |
+
+Importing `fangcmd` costs roughly +2 MB over the identical `cobracmd`-only
+binary, entirely from fang's terminal-UI dependency tree. A binary that
+only calls `cobracmd.WireCobra` never pays that cost - `go version -m` on
+it lists no `charm.land/fang` dependency at all.
 
 ## Output contract
 
-- **`--version` / `-v` flag** (via `cobracmd.Wire` + `fang.Execute`, or any
-  direct use of `Info.Short()`): exactly the bare semver version, nothing
-  else. No program name, no commit, no date, no parentheses. Consumable as
-  `$(mycli --version)`.
+- **`--version` / `-v` flag** (via `cobracmd.WireCobra` + `root.Execute()`,
+  `fangcmd.Wire` + `fang.Execute()`, or any direct use of `Info.Short()`):
+  exactly the bare semver version, nothing else. No program name, no
+  commit, no date, no parentheses. Consumable as `$(mycli --version)`.
 
   ```
   $ mycli --version
@@ -163,6 +242,48 @@ cobra or fang.
 
 Both outputs end with a single trailing newline supplied by the printing
 caller (`Short()`/`Long()` themselves return no newline).
+
+## Upgrading from v0.1.x
+
+`v0.2.0` moves the fang integration out of `cobracmd` into a new `fangcmd`
+package, so `cobracmd` no longer imports fang. `cobracmd.Wire` (which
+returned `[]fang.Option`) is gone.
+
+- **Binaries that use fang** (this was every `cobracmd.Wire` caller before
+  `v0.2.0`): switch the import from `github.com/strongo/buildinfo/cobracmd`
+  to `github.com/strongo/buildinfo/fangcmd`, and change the call from
+  `cobracmd.Wire(root, info)` to `fangcmd.Wire(root, info)`. Nothing else
+  changes - same signature, same return type, same behaviour.
+
+  ```diff
+  -	"github.com/strongo/buildinfo/cobracmd"
+  +	"github.com/strongo/buildinfo/fangcmd"
+
+  -	fangOpts := cobracmd.Wire(root, info)
+  +	fangOpts := fangcmd.Wire(root, info)
+  ```
+
+- **Binaries that don't actually use fang** (the reason this release
+  exists): drop the `fang.Execute` call and the fang import entirely, and
+  call `cobracmd.WireCobra(root, info)` + `root.Execute()` instead. This is
+  also the point at which the binary stops linking fang.
+
+  ```diff
+  -	"charm.land/fang/v2"
+  	"github.com/spf13/cobra"
+   	"github.com/strongo/buildinfo"
+   	"github.com/strongo/buildinfo/cobracmd"
+
+  -	fangOpts := cobracmd.Wire(root, info)
+  -	if err := fang.Execute(context.Background(), root, fangOpts...); err != nil {
+  +	cobracmd.WireCobra(root, info)
+  +	if err := root.Execute(); err != nil {
+   		os.Exit(1)
+   	}
+  ```
+
+`cobracmd.VersionCommand` is unchanged and still exported from `cobracmd`
+for either path.
 
 ## Known traps this module already handles
 

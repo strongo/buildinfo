@@ -1,64 +1,64 @@
-// Package cobracmd wires github.com/strongo/buildinfo into a cobra command
-// tree fronted by charm.land/fang/v2 - the fleet's standard CLI stack.
-//
-// Left to its own defaults, fang resolves the --version/-v flag from
-// runtime/debug.ReadBuildInfo() and prints "unknown (built from source)"
-// whenever that lookup comes up empty, while a hand-rolled `version`
-// subcommand elsewhere in the same binary reads an entirely different,
-// ldflags-stamped value. That is the exact bug this package closes: Wire
-// feeds fang and the `version` subcommand the same resolved
+// Package cobracmd wires github.com/strongo/buildinfo into a plain cobra
+// command tree - no other CLI framework required. It gives a CLI's
+// --version/-v flag and its `version` subcommand the same resolved
 // buildinfo.Info, so the two surfaces cannot disagree.
+//
+// This package is fang-free by design and imports nothing beyond cobra
+// and buildinfo itself: a binary that imports only cobracmd never links
+// charm.land/fang/v2 or its terminal-UI dependencies. For the fleet's
+// cobra + fang stack, use the sibling fangcmd package
+// (github.com/strongo/buildinfo/fangcmd) instead - it wires the same
+// Info through fang.Execute and reuses VersionCommand from this package
+// so the two wiring paths cannot drift onto different output.
 package cobracmd
 
 import (
 	"fmt"
 
-	"charm.land/fang/v2"
 	"github.com/spf13/cobra"
 	"github.com/strongo/buildinfo"
 )
 
-// versionTemplate overrides cobra's default "<name> version <version>\n"
-// so the --version/-v flag (handled by fang, via c.Version) prints exactly
-// the bare version - matching buildinfo.Info.Short()'s contract of no
-// program name, no commit, no date, no decoration.
-const versionTemplate = "{{.Version}}\n"
+// VersionTemplate overrides cobra's default "<name> version <version>\n"
+// so the --version/-v flag prints exactly the bare version - matching
+// buildinfo.Info.Short()'s contract of no program name, no commit, no
+// date, no decoration. Exported so the fangcmd package can share the
+// identical template rather than risk a second copy drifting from this
+// one.
+const VersionTemplate = "{{.Version}}\n"
 
-// Wire adds a `version` subcommand to root (printing info.Long()) and
-// returns the fang.Option(s) that make fang's --version/-v flag print
-// exactly info.Short(). Pass the returned options straight into
-// fang.Execute so both surfaces are driven by the one Info value:
+// WireCobra adds a `version` subcommand to root (printing info.Long())
+// and sets root.Version plus the version template so plain cobra's own
+// --version/-v flag handling prints exactly info.Short() - no program
+// name, no commit, no date, no decoration.
 //
 //	info := buildinfo.Get("mycli")
 //	root := &cobra.Command{Use: "mycli"}
 //	// ... attach the rest of the command tree to root ...
-//	if err := fang.Execute(ctx, root, cobracmd.Wire(root, info)...); err != nil {
+//	cobracmd.WireCobra(root, info)
+//	if err := root.Execute(); err != nil {
 //	    os.Exit(1)
 //	}
 //
-// Wire does not call fang.Execute itself - the caller stays in control of
-// any other fang.Option it wants (themes, signal handling, and so on).
-func Wire(root *cobra.Command, info buildinfo.Info) []fang.Option {
+// WireCobra does for plain cobra exactly what hand-rolling
+// `root.Version = info.Short()` plus `root.SetVersionTemplate(...)` did
+// in every consumer of this module before this helper existed - now both
+// live in one tested place. It does not call root.Execute itself.
+//
+// A binary that is already built on fang should call fangcmd.Wire
+// instead of WireCobra: the two package's version templates and
+// VersionCommand are shared, so the flag and subcommand cannot disagree
+// no matter which wiring path a given binary uses.
+func WireCobra(root *cobra.Command, info buildinfo.Info) {
 	root.AddCommand(VersionCommand(info))
-
-	// fang.Execute assigns root.Version from its own options every call, so
-	// this template is what keeps that assignment from carrying fang's
-	// default "<name> version " prefix or a "(shortsha)" suffix through to
-	// output. It is read at print time, independent of when Version is set.
-	root.SetVersionTemplate(versionTemplate)
-
-	return []fang.Option{
-		// Deliberately omits fang.WithCommit: fang appends "(<7-char-sha>)"
-		// to the version string whenever a commit is supplied, which would
-		// break Short()'s "exactly the version, no decoration" contract.
-		fang.WithVersion(info.Short()),
-	}
+	root.Version = info.Short()
+	root.SetVersionTemplate(VersionTemplate)
 }
 
 // VersionCommand returns a standalone `version` subcommand that prints
-// info.Long(). Wire adds this to root automatically; call it directly only
-// if you need to customize the command (e.g. change Use or Short) before
-// adding it yourself.
+// info.Long(). WireCobra (and fangcmd.Wire) add this automatically; call
+// it directly only if you need to customize the command (e.g. change Use
+// or Short) before adding it yourself.
 func VersionCommand(info buildinfo.Info) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
