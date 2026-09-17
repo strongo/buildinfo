@@ -13,6 +13,7 @@
 package cobracmd
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -56,17 +57,35 @@ func WireCobra(root *cobra.Command, info buildinfo.Info) {
 }
 
 // VersionCommand returns a standalone `version` subcommand that prints
-// info.Long(). WireCobra (and fangcmd.Wire) add this automatically; call
-// it directly only if you need to customize the command (e.g. change Use
-// or Short) before adding it yourself.
+// info.Long(), or - with `--json` - a single buildinfo.VersionJSON object
+// and nothing else, per the fleet-wide `version --json` contract
+// (cli-install#req:version-json-contract in strongo/cli-helpers). `--json`
+// is the fleet's probe flag independent of any output-format flag a CLI
+// otherwise offers (`--format`, `-o`); it performs no I/O beyond writing
+// that one object to stdout, so probing an installed CLI is safe to repeat.
+// WireCobra (and fangcmd.Wire) add this command automatically; call it
+// directly only if you need to customize the command (e.g. change Use or
+// Short) before adding it yourself.
 func VersionCommand(info buildinfo.Info) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version, commit and build date",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// GetBool can only fail for an undeclared or wrong-typed flag;
+			// "json" is declared as a bool by this same function below, so
+			// the error is unreachable and deliberately ignored rather than
+			// left as untestable dead code.
+			asJSON, _ := cmd.Flags().GetBool("json")
+			if asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetEscapeHTML(false)
+				return enc.Encode(info.JSON())
+			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), info.Long())
 			return err
 		},
 	}
+	cmd.Flags().Bool("json", false, "print version, commit and build date as one JSON object")
+	return cmd
 }

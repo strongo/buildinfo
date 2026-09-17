@@ -27,6 +27,21 @@ var (
 	date    string
 )
 
+// Date source labels for Info.DateSource / VersionJSON.DateSource, per the
+// fleet-wide `version --json` contract (cli-install#req:version-json-contract
+// in strongo/cli-helpers): callers must be able to tell a release build's
+// release build time apart from a plain `go build`'s commit timestamp.
+const (
+	// DateSourceBuild marks a Date stamped at link time via -ldflags -X
+	// (this package's date variable) - a released build's release build
+	// time.
+	DateSourceBuild = "build"
+	// DateSourceCommit marks a Date read from runtime/debug.BuildInfo's
+	// vcs.time - the commit's own timestamp, used when no link-time date
+	// was stamped (e.g. a plain `go build` or `go install`).
+	DateSourceCommit = "commit"
+)
+
 // Info is a resolved, ready-to-print snapshot of a program's build identity.
 type Info struct {
 	// Name is the program name, e.g. "ingitdb".
@@ -40,6 +55,47 @@ type Info struct {
 	// Date is an RFC 3339 / ISO 8601 timestamp. It is "" when genuinely
 	// unknown.
 	Date string
+	// DateSource records where Date came from: DateSourceBuild when it was
+	// stamped at link time, DateSourceCommit when it was read from
+	// runtime/debug.BuildInfo's vcs.time, or "" when Date itself is
+	// unknown.
+	DateSource string
+}
+
+// VersionJSON is the fleet-wide `version --json` contract
+// (cli-install#req:version-json-contract in strongo/cli-helpers): the exact
+// set of string keys every catalog CLI's `version --json` must print. The
+// writer (Info.JSON(), used by cobracmd.VersionCommand and, through it,
+// fangcmd.Wire) and any reader (e.g. cli-helpers' status prober) share this
+// one exported type so the two can never decode a different shape from what
+// was written. New keys may be added in the future; existing keys are never
+// removed or repurposed.
+type VersionJSON struct {
+	// Name is the binary name, equal to its catalog id.
+	Name string `json:"name"`
+	// Version is the bare semver version, no leading "v"; "dev" when the
+	// build cannot determine it.
+	Version string `json:"version"`
+	// Commit is the full commit SHA, with a "+dirty" suffix when built
+	// from a modified tree; "" when unknown.
+	Commit string `json:"commit"`
+	// Date is an RFC 3339 timestamp; "" when unknown.
+	Date string `json:"date"`
+	// DateSource is DateSourceBuild, DateSourceCommit, or "" when Date
+	// itself is unknown.
+	DateSource string `json:"date_source"`
+}
+
+// JSON returns i as the fleet-wide version --json contract value. It never
+// performs I/O; callers encode the result themselves (see
+// cobracmd.VersionCommand for the canonical `version --json` writer).
+//
+// Info and VersionJSON share identical field names, order and types by
+// design (only VersionJSON carries json tags), so this is a plain
+// conversion rather than a field-by-field copy that could drift out of
+// sync as either type grows.
+func (i Info) JSON() VersionJSON {
+	return VersionJSON(i)
 }
 
 // unknownVersion is the clearly-marked placeholder Get returns when no
@@ -64,6 +120,9 @@ func Get(name string) Info {
 		Version: version,
 		Commit:  commit,
 		Date:    date,
+	}
+	if info.Date != "" {
+		info.DateSource = DateSourceBuild
 	}
 
 	if info.Version == "" || info.Commit == "" || info.Date == "" {
@@ -105,6 +164,7 @@ func applyBuildInfo(info *Info, bi *debug.BuildInfo) {
 		case "vcs.time":
 			if info.Date == "" && s.Value != "" {
 				info.Date = s.Value
+				info.DateSource = DateSourceCommit
 			}
 		case "vcs.modified":
 			modified = s.Value == "true"

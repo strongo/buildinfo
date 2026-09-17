@@ -32,12 +32,18 @@ go get github.com/strongo/buildinfo
 package buildinfo
 
 type Info struct {
-    Name    string // program name, e.g. "ingitdb"
-    Version string // bare semver, no leading "v"
-    Commit  string // full git SHA (with a "+dirty" suffix if the tree was
-                    // dirty at build time), or "" when genuinely unknown
-    Date    string // RFC 3339 / ISO 8601, or "" when genuinely unknown
+    Name       string // program name, e.g. "ingitdb"
+    Version    string // bare semver, no leading "v"
+    Commit     string // full git SHA (with a "+dirty" suffix if the tree was
+                       // dirty at build time), or "" when genuinely unknown
+    Date       string // RFC 3339 / ISO 8601, or "" when genuinely unknown
+    DateSource string // DateSourceBuild, DateSourceCommit, or "" - see below
 }
+
+const (
+    DateSourceBuild  = "build"  // Date was stamped at link time (-ldflags -X)
+    DateSourceCommit = "commit" // Date came from debug.BuildInfo's vcs.time
+)
 
 // Get resolves name's build identity: link-time -X values first, falling
 // back to runtime/debug.ReadBuildInfo(), falling back to clearly-marked
@@ -50,6 +56,18 @@ func (i Info) Short() string
 
 // Long is "<name> <version> (<commit>) <date>" - for a `version` subcommand.
 func (i Info) Long() string
+
+// JSON returns i as the fleet-wide `version --json` contract value - see
+// below.
+func (i Info) JSON() VersionJSON
+
+type VersionJSON struct {
+    Name       string `json:"name"`
+    Version    string `json:"version"`
+    Commit     string `json:"commit"`
+    Date       string `json:"date"`
+    DateSource string `json:"date_source"`
+}
 ```
 
 Call `buildinfo.Get(name)` once at startup and use the returned `Info`
@@ -240,8 +258,32 @@ it lists no `charm.land/fang` dependency at all.
   mycli 1.2.3 (a1b2c3d4e5f6...) 2026-08-30T12:00:00Z
   ```
 
-Both outputs end with a single trailing newline supplied by the printing
-caller (`Short()`/`Long()` themselves return no newline).
+- **`version --json`** (via `cobracmd.VersionCommand`, wired automatically
+  by both `cobracmd.WireCobra` and `fangcmd.Wire`): the fleet-wide
+  `version --json` contract - exactly one JSON object on stdout, nothing
+  else, exit 0, no network access, no writes, no telemetry. `--json` is
+  the fleet's probe flag regardless of a CLI's own output-format flag
+  (`--format`, `-o`), which it may also offer alongside it.
+
+  ```
+  $ mycli version --json
+  {"name":"mycli","version":"1.2.3","commit":"a1b2c3d4e5f6...","date":"2026-08-30T12:00:00Z","date_source":"build"}
+  ```
+
+  | Key | Value |
+  |---|---|
+  | `name` | the binary name, equal to `Info.Name` |
+  | `version` | bare semver, no leading `v`; `"dev"` when unresolved |
+  | `commit` | full commit SHA, `+dirty` suffix when the tree was modified; `""` when unknown |
+  | `date` | RFC 3339 timestamp; `""` when unknown |
+  | `date_source` | `"build"` when `date` was stamped at link time (a released build's release build time), `"commit"` when it came from `debug.BuildInfo`'s `vcs.time`, `""` when `date` itself is unknown |
+
+  Additional keys may be added in the future; readers must ignore keys they
+  don't recognize, and existing keys are never removed or repurposed.
+
+Both plain outputs end with a single trailing newline supplied by the
+printing caller (`Short()`/`Long()` themselves return no newline);
+`version --json`'s single trailing newline comes from `json.Encoder`.
 
 ## Upgrading from v0.1.x
 

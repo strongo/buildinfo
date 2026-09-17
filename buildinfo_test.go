@@ -1,6 +1,8 @@
 package buildinfo
 
 import (
+	"encoding/json"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -35,6 +37,16 @@ func TestGet_StampedValuesWinOverBuildInfo(t *testing.T) {
 	}
 	if got.Name != "mycli" {
 		t.Errorf("Name = %q, want %q", got.Name, "mycli")
+	}
+}
+
+func TestGet_DateSourceIsBuildWhenStamped(t *testing.T) {
+	resetStamps(t, "1.2.3", "abcdef1234567890", "2026-08-30T00:00:00Z")
+
+	got := Get("mycli")
+
+	if got.DateSource != DateSourceBuild {
+		t.Errorf("DateSource = %q, want %q", got.DateSource, DateSourceBuild)
 	}
 }
 
@@ -172,5 +184,115 @@ func TestApplyBuildInfo_DoesNotOverwriteAlreadyStamped(t *testing.T) {
 	}
 	if info.Commit != "already-set" {
 		t.Errorf("Commit was overwritten: %q", info.Commit)
+	}
+}
+
+func TestApplyBuildInfo_DateSourceCommitWhenDateFilledFromVCSTime(t *testing.T) {
+	var info Info
+	bi := fakeBuildInfo("v0.1.0", "cafebabe", "2026-08-30T12:00:00Z", false)
+
+	applyBuildInfo(&info, bi)
+
+	if info.Date != "2026-08-30T12:00:00Z" {
+		t.Errorf("Date = %q, want %q", info.Date, "2026-08-30T12:00:00Z")
+	}
+	if info.DateSource != DateSourceCommit {
+		t.Errorf("DateSource = %q, want %q", info.DateSource, DateSourceCommit)
+	}
+}
+
+func TestApplyBuildInfo_DoesNotOverwriteAlreadyStampedDateOrSource(t *testing.T) {
+	info := Info{Date: "2026-01-01T00:00:00Z", DateSource: DateSourceBuild}
+	bi := fakeBuildInfo("v0.1.0", "cafebabe", "2026-08-30T12:00:00Z", false)
+
+	applyBuildInfo(&info, bi)
+
+	if info.Date != "2026-01-01T00:00:00Z" {
+		t.Errorf("Date was overwritten: %q", info.Date)
+	}
+	if info.DateSource != DateSourceBuild {
+		t.Errorf("DateSource was overwritten: %q, want %q", info.DateSource, DateSourceBuild)
+	}
+}
+
+func TestApplyBuildInfo_NoVCSTime_DateSourceStaysEmpty(t *testing.T) {
+	var info Info
+	bi := &debug.BuildInfo{Main: debug.Module{Version: "v0.1.0"}}
+
+	applyBuildInfo(&info, bi)
+
+	if info.Date != "" {
+		t.Errorf("Date = %q, want empty", info.Date)
+	}
+	if info.DateSource != "" {
+		t.Errorf("DateSource = %q, want empty", info.DateSource)
+	}
+}
+
+func TestInfo_JSON_MapsAllFields(t *testing.T) {
+	i := Info{
+		Name:       "mycli",
+		Version:    "1.2.3",
+		Commit:     "abcdef1234567890",
+		Date:       "2026-08-30T00:00:00Z",
+		DateSource: DateSourceBuild,
+	}
+
+	want := VersionJSON{
+		Name:       "mycli",
+		Version:    "1.2.3",
+		Commit:     "abcdef1234567890",
+		Date:       "2026-08-30T00:00:00Z",
+		DateSource: DateSourceBuild,
+	}
+	if got := i.JSON(); got != want {
+		t.Errorf("JSON() = %+v, want %+v", got, want)
+	}
+}
+
+func TestInfo_JSON_ZeroValueHasEmptyDateSource(t *testing.T) {
+	got := Info{Name: "mycli", Version: "dev"}.JSON()
+
+	if got.DateSource != "" {
+		t.Errorf("DateSource = %q, want empty for an unresolved date", got.DateSource)
+	}
+	if got.Date != "" {
+		t.Errorf("Date = %q, want empty", got.Date)
+	}
+}
+
+func TestVersionJSON_MarshalsContractKeys(t *testing.T) {
+	v := VersionJSON{
+		Name:       "mycli",
+		Version:    "1.2.3",
+		Commit:     "abcdef1234567890",
+		Date:       "2026-08-30T00:00:00Z",
+		DateSource: DateSourceBuild,
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	want := map[string]string{
+		"name":        "mycli",
+		"version":     "1.2.3",
+		"commit":      "abcdef1234567890",
+		"date":        "2026-08-30T00:00:00Z",
+		"date_source": "build",
+	}
+	if len(m) != len(want) {
+		t.Fatalf("marshaled object has %d keys, want %d: %v", len(m), len(want), m)
+	}
+	for k, v := range want {
+		if m[k] != v {
+			t.Errorf("key %q = %q, want %q", k, m[k], v)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package fangcmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,10 +14,11 @@ import (
 
 func newTestInfo() buildinfo.Info {
 	return buildinfo.Info{
-		Name:    "testcli",
-		Version: "1.2.3",
-		Commit:  "abcdef1234567890",
-		Date:    "2026-08-30T00:00:00Z",
+		Name:       "testcli",
+		Version:    "1.2.3",
+		Commit:     "abcdef1234567890",
+		Date:       "2026-08-30T00:00:00Z",
+		DateSource: buildinfo.DateSourceBuild,
 	}
 }
 
@@ -94,5 +96,23 @@ func TestWire_VersionFlagHasNoDecoration(t *testing.T) {
 	}
 	if strings.Contains(out, "(") {
 		t.Errorf("--version output must not carry a commit suffix, got %q", out)
+	}
+}
+
+func TestWire_VersionJSON_PrintsExactlyOneContractObject(t *testing.T) {
+	// fangcmd.Wire adds cobracmd.VersionCommand as-is, so `version --json`
+	// must work identically when driven through fang.Execute - this proves
+	// fang's own flag/command handling doesn't swallow or reinterpret the
+	// --json flag on the version subcommand.
+	info := newTestInfo()
+
+	out := runFang(t, info, []string{"version", "--json"})
+
+	var got buildinfo.VersionJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json.Unmarshal(%q) error = %v", out, err)
+	}
+	if got != info.JSON() {
+		t.Errorf("decoded VersionJSON = %+v, want %+v", got, info.JSON())
 	}
 }
