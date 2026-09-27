@@ -35,7 +35,4 @@ jobs:
       # was disabled during first setup.)
       disable-version-bumping: false
       code_coverage: true
-      # Both packages are at 100% coverage as of the initial commit; set
-      # comfortably below that so an incidental drop doesn't fail CI while
-      # still catching an actual regression.
-      min_test_coverage_percent: 90
+      min_test_coverage_percent: 100
